@@ -1,0 +1,64 @@
+# Environment files (SENSITIVE - contains API keys)
+.env
+.env.local
+.env.*.local
+*.env
+
+# k8sgpt outputs
+report.json
+report.yaml
+*.report.*
+report-*.json
+*.stderr
+*.tmp
+
+# Kubernetes configs (may contain secrets)
+*.kubeconfig
+*kubeconfig*
+*.kube/config
+
+# Secrets and credentials
+*.key
+*.pem
+*.cert
+*.crt
+*secret*
+*password*
+credentials.json
+auth.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# Python (if you add Python scripts)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# Node (if you add Node tools)
+node_modules/
+package-lock.json
+yarn.lock

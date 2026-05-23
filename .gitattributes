@@ -1,0 +1,18 @@
+# Git attributes for proper line endings
+* text=auto
+
+# Shell scripts should use LF
+*.sh text eol=lf
+
+# Documentation
+*.md text
+
+# YAML files
+*.yaml text
+*.yml text
+
+# Exclude large documentation from export
+CHANGES_SUMMARY.md export-ignore
+FIXED.md export-ignore
+ISSUE_FIXED.md export-ignore
+TEST_CHECKLIST.md export-ignore

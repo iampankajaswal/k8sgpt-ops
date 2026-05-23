@@ -1,0 +1,246 @@
+name: k8sgpt-gate-improved
+
+on:
+  workflow_dispatch:
+    inputs:
+      inject_failure:
+        description: "Inject failure (true/false)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  K8SGPT_NAMESPACE: k8sgpt
+  K8SGPT_FILTERS: Pod,Deployment,Service
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1. Setup tools with caching
+      - name: Cache tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/kubectl
+            /usr/local/bin/kind
+            /usr/local/bin/k8sgpt
+          key: k8s-tools-${{ runner.os }}-v2
+
+      - name: Install kubectl
+        run: |
+          if ! command -v kubectl &> /dev/null; then
+            KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+            curl -Lo kubectl https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/
+          fi
+          kubectl version --client
+
+      - name: Install kind
+        run: |
+          if ! command -v kind &> /dev/null; then
+            curl -Lo kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+            chmod +x kind
+            sudo mv kind /usr/local/bin/
+          fi
+          kind version
+
+      - name: Install k8sgpt
+        run: |
+          if ! command -v k8sgpt &> /dev/null; then
+            curl -sSL https://github.com/k8sgpt-ai/k8sgpt/releases/latest/download/k8sgpt_Linux_x86_64.tar.gz | tar -xz
+            chmod +x k8sgpt
+            sudo mv k8sgpt /usr/local/bin/
+          fi
+          k8sgpt version
+
+      - name: Install jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      # 2. Create cluster with proper config
+      - name: Create kind cluster
+        run: |
+          cat <<EOF | kind create cluster --config=-
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+          EOF
+          kubectl cluster-info
+          kubectl wait --for=condition=Ready nodes --all --timeout=90s
+
+      # 3. Install and configure Ollama with health checks
+      - name: Setup Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+
+          # Start Ollama in background
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          OLLAMA_PID=$!
+          echo "Ollama PID: $OLLAMA_PID"
+
+          # Wait for Ollama to be ready (with timeout)
+          for i in {1..30}; do
+            if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "Ollama is ready"
+              break
+            fi
+            echo "Waiting for Ollama to start... ($i/30)"
+            sleep 2
+          done
+
+          # Pull model
+          ollama pull tinyllama
+          ollama list
+
+      # 4. Configure k8sgpt with error handling
+      - name: Configure k8sgpt
+        run: |
+          # Add authentication
+          if ! k8sgpt auth add --backend ollama --model tinyllama --baseurl http://localhost:11434/v1; then
+            echo "Failed to add auth"
+            k8sgpt auth list
+            exit 1
+          fi
+
+          # Set default provider
+          k8sgpt auth default --provider ollama
+
+          # Verify configuration
+          echo "Current k8sgpt configuration:"
+          k8sgpt auth list
+
+      # 5. Create namespace
+      - name: Create namespace
+        run: |
+          kubectl create namespace $K8SGPT_NAMESPACE
+          kubectl get namespace $K8SGPT_NAMESPACE
+
+      # 6. Deploy workloads
+      - name: Deploy healthy application
+        run: |
+          kubectl apply -f examples/healthy.yaml
+          echo "Deployed healthy application"
+
+      - name: Deploy broken application
+        if: ${{ github.event.inputs.inject_failure == 'true' || github.event_name == 'pull_request' }}
+        run: |
+          kubectl apply -f examples/broken.yaml
+          echo "Deployed broken application (ImagePullBackOff expected)"
+
+      # 7. Wait for pods with proper timeout
+      - name: Wait for pod states
+        run: |
+          echo "Waiting for pods to reach terminal state..."
+
+          # Wait up to 60s for healthy pods to be ready
+          kubectl wait --for=condition=Ready pod -l app=healthy \
+            -n $K8SGPT_NAMESPACE \
+            --timeout=60s || echo "Some pods not ready (expected if broken app deployed)"
+
+          # Give broken pods time to fail
+          sleep 20
+
+          echo "Current pod status:"
+          kubectl get pods -n $K8SGPT_NAMESPACE
+
+      # 8. Run k8sgpt validation
+      - name: Run k8sgpt validation
+        id: k8sgpt_analysis
+        run: |
+          chmod +x scripts/analyze.sh
+
+          # Set environment for script
+          export K8SGPT_NAMESPACE="${K8SGPT_NAMESPACE}"
+          export K8SGPT_FILTERS="${K8SGPT_FILTERS}"
+          export OUTPUT_FILE="report.json"
+
+          # Run analysis (will exit 1 if issues found)
+          if ./scripts/analyze.sh; then
+            echo "validation_result=passed" >> $GITHUB_OUTPUT
+            echo "::notice::Validation passed - no issues detected"
+          else
+            echo "validation_result=failed" >> $GITHUB_OUTPUT
+            echo "::error::Validation failed - issues detected"
+            exit 1
+          fi
+
+      # 9. Upload report as artifact
+      - name: Upload k8sgpt report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8sgpt-report-${{ github.run_id }}
+          path: report.json
+          retention-days: 30
+
+      # 10. Post results as PR comment (if PR)
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let reportContent = '## k8sgpt Analysis Report\n\n';
+
+            try {
+              const report = JSON.parse(fs.readFileSync('report.json', 'utf8'));
+              const issueCount = report.results ? report.results.length : 0;
+
+              if (issueCount === 0) {
+                reportContent += '✅ **No issues detected** - cluster is healthy!\n';
+              } else {
+                reportContent += `❌ **${issueCount} issue(s) detected**\n\n`;
+                reportContent += '<details><summary>Click to see details</summary>\n\n';
+
+                report.results.forEach((result, idx) => {
+                  reportContent += `### Issue ${idx + 1}: ${result.name}\n`;
+                  reportContent += `- **Kind:** ${result.kind}\n`;
+                  reportContent += `- **Error:** ${result.error[0].Text}\n\n`;
+                });
+
+                reportContent += '</details>\n';
+              }
+            } catch (error) {
+              reportContent += '⚠️ Could not parse report file\n';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: reportContent
+            });
+
+      # 11. Cleanup
+      - name: Debug logs on failure
+        if: failure()
+        run: |
+          echo "=== Pod Status ==="
+          kubectl get pods -n $K8SGPT_NAMESPACE -o wide
+
+          echo "=== Pod Descriptions ==="
+          kubectl describe pods -n $K8SGPT_NAMESPACE
+
+          echo "=== k8sgpt Auth ==="
+          k8sgpt auth list
+
+          echo "=== Ollama Logs ==="
+          cat /tmp/ollama.log || echo "No Ollama logs"
+
+          echo "=== Report Content ==="
+          cat report.json || echo "No report file"

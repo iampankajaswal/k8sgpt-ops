@@ -101,3 +101,11 @@ make cleanup
 export K8SGPT_NAMESPACE=k8sgpt
 export K8SGPT_FILTERS=Pod,Deployment,Service
 ./scripts/analyze.sh
+```
+
+## 📸 Examples & Screenshots
+
+See real terminal outputs and sample reports:
+- [Terminal Output Examples](docs/examples/terminal-outputs.md) - Complete command outputs
+- [Sample JSON Reports](docs/examples/sample-reports.md) - Analysis reports with explanations
+- [Screenshots Guide](docs/screenshots/README.md) - Visual examples and ASCII diagrams

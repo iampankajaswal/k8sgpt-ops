@@ -2,6 +2,8 @@
 
 AI-powered Kubernetes diagnostics using k8sgpt integrated with CI/CD and cluster workflows.
 
+
+
 ## What this does
 - Detects Kubernetes issues (CrashLoopBackOff, ImagePullBackOff, OOMKilled, etc.)
 - Provides AI-based root cause analysis and remediation suggestions

@@ -1,4 +1,5 @@
 #!/bin/bash
+
 set -e
 
 # Load environment variables
@@ -114,6 +115,7 @@ else
     echo "   ❌ Failed to set default provider"
     exit 1
 fi
+
 
 # Verify configuration
 echo ""
